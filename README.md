@@ -1,8 +1,8 @@
 # Machine Learning 131 : Files/Homework for Cumulative Final Project
 
-I want to analyze Pro-Tennis matches so that I can figure out what types of serves and shots are most effective at winning a point. Although, I must admit we are not at Nadal or Federer's level of athleticism, I think coming to conclusions from this data will be useful because we think we play like them.
+I want to analyze Pro-Tennis matches so that I can figure out what types of serves and shots are most effective at winning a point.
   
-I am interested in predicting the outcomes for Serves and Rallies (**isAce**, **isRallyWinner**). Some questions I am interested in answering are:    
+I am interested in predicting the outcomes for Serves and Rallies (**isAce**, **isRallyWinner**). The main questions I am interested in answering are:    
   
 * Does the server have a better chance at winning the point regardless of direction, faults/second serves taken, or speed of their serve?  
 * Does the first player to hit a volley in a rally have a better chance at winning the point in general?  
