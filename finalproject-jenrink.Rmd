@@ -1,0 +1,885 @@
+---
+title: "Predicting Tennis Point Winners"
+subtitle: 'With Machine Learning Models Trained from Point-by-Point Tennis Data'
+date: "`r Sys.Date()`"
+author: Jennifer Rink
+output:
+  rmarkdown::html_document:
+    self_contained: true
+    lib_dir: libs
+    code_folding: hide
+    toc: true
+    toc_float: true
+    collapsed: true
+    theme: readable
+    highlight: tango
+    smooth_scroll: true
+    css: "style.css"
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{css, echo = F}
+body { background-color: #9DC183; }
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+knit_hooks$set(optipng=hook_optipng)
+```
+
+```{r, include=FALSE}
+library(tidymodels)
+library(ISLR)
+library(ISLR2)
+library(tidyverse)
+library(glmnet)
+library(modeldata)
+library(ggthemes)
+library(janitor)
+library(naniar)
+library(xgboost)
+library(ranger)
+library(vip)
+library(corrplot)
+library(ggplot2)
+library(pROC)
+library(finalfit)
+library(kableExtra)
+
+library(doParallel)
+registerDoParallel(cores = parallel::detectCores())
+
+tidymodels_prefer()
+```
+
+<center>
+
+![Poster I drew for my Dad](Images/tennis_art2.jpg)
+
+</center>
+
+# Introduction
+
+This project aims to build a machine learning model that predicts if a tennis shot will win the point based on several variables such as the length of the rally, or direction of the shot.
+I will be using data from Jeff Sackmann's The Match Charting Project (MCP).
+
+<center><https://github.com/JeffSackmann/tennis_MatchChartingProject></center>
+
+MCP match records contain user-contributed shot-by-shot data for every point of a match, including the type of shot, direction of shot, types of errors, and more that will be described in further detail below.
+For this binary classification project, I will be utilizing several machine learning techniques in order to produce the most accurate model.
+
+### Motive
+
+My Dad and I do everything together, and are similar in every way.
+We are in a band together, we are an enviably efficient kayaking duo, and his work in the tech-industry inspired me to pursue my Stats & Data Science Major at UCSB.
+But every Sunday morning on the tennis court, we are transformed into the fiercest rivalry that would challenge even Rafael Nadal and Roger Federer.
+Every point is fought for like dying would be better than living through the shame of letting the other win.
+
+The pure bliss and carnal triumph that overcomes me as I serve an ace or hit a backhand winner down the line cannot be reproduced.
+Yet the devastating loss of an unforced error, shanking the ball over the fence or a double service fault is just as intense.
+
+<center>![Roger Federer celebrating](https://media4.giphy.com/media/KH21ScGPuE7QDS1Y9I/giphy.gif?cid=ecf05e47in2m05nwjf7z7i8xva1euba7opuryhvogwtadr77&rid=giphy.gif)</center>
+
+As I was watching the Australian Open this early January, the question suddenly struck me:\
+*What if I could predict the best shot to hit to have the highest probability of winning the point?*
+
+Is there really a way to optimize my strategy on the court?
+Does the probability of winning the point increase if I hit a backhand, a forehand, or a slice?
+I decided that I would find data recorded from the professionals from 2017 to 2022, some iconic years of tennis, and attempt to find a pattern for point winning shots.
+The goal of this project is to ultimately help me, and any other vengeful daughters, improve our strategies when it comes to competing against our Dads.
+They may have the experience, but we're the underdogs.
+
+### Data Description
+
+This data is from The Match Charting Project which is a crowd sourced effort to collect detailed shot-by-shot data for pro tennis matches.
+The most recent database totals are 12 thousand matches, 2 million points, and 7 million shots!
+There are 152 contributers in total as of 2023.
+
+The raw data file has 30 variables.
+I have removed the unnecessary information variables for my analysis.
+Therefore, each point is recorded shot-by-shot by the following indicators:
+
+-   `x1st_in`: indicates if the first serve went in or not (TRUE or FALSE)
+-   `x2nd_in`: indicates if the second serve went in or not (TRUE or FALSE or NA if the first serve went in)
+-   `is_ace`: indicates if the serve was an ace or not (TRUE or FALSE)
+-   `is_unret`: indicates if the serve was returned by Player 2 or not (TRUE or FALSE)
+-   `is_rally_winner`: indicates if the server won the rally or not (TRUE or FALSE)
+-   `is_forced`: indicates if the outcome of the point was a forced error (TRUE or FALSE)
+-   `is_double`: indicates if the serve was a double fault or not (TRUE or FALSE)
+-   `pt_winner`: indicates which player won the point (Player_1 or Player_2)
+-   `is_svr_winner`: indicates if the server won the point (Yes or No)
+-   `rally_count`: the number of back-and-forth shots that made up the rally (integer value)
+-   `x1st_direction`: indicates the direction of the first serve (wide, body, down the t)
+-   `x2nd_direction`: indicates the direction of the second serve (wide, body, down the t, NA if first serve went in)
+-   `x1st_return`: indicates the type of return shot after a first serve (forehand, backhand, backhand slice, forehand slice, net error, wide error, deep error, wide and deep error)
+-   `x2nd_return`: indicates the type of return shot after a second serve (forehand, backhand, backhand slice, forehand slice, net error, wide error, deep error, wide and deep error, NA if first serve went in)
+-   `x1st_outcome`: indicates the outcome of a point after a first serve (unforced error, forced error, winner)
+-   `x2nd_outcome`: indicates the outcome of a point after a second serve (unforced error, forced error, winner, NA if first serve went in)
+
+Before I cleaned the data, the first and second serve points were inputted as follows:
+
+-   `serve direction` (4 = wide, 5 = body, 6 = down the t)
+-   `shot codes` (f = forehand, b = backhand, s = backhand slice, r = forehand slice)
+-   `how the point ended` (\@ = unforced error, \# = forced error, and \* = winner)
+-   `type of error` (n = net, w = wide, d = deep, x = wide and deep)
+
+Many points looked something like this: <mark> 5f2f3b3b1w# </mark>
+
+Which is translated as: serve to the body (5), forehand return down the middle (f2), forehand to backhand side (f3), backhand crosscourt (b3), backhand down the line (b1) that missed wide (w) for a forced error (\#).
+
+These shot-by-shot codes were very frustrating to deal with initially, but once I started climbing the learning curve, it was much easier to understand each point.
+I knew that converting/translating these codes into simpler factors would be the majority of the work to tidy my data, and I was intimidated by the process.
+However, my drive to find an answer to my question inspired me to roll up my sleeves and get to it.
+
+### Project Overview
+
+Now that we know the basics of the variables in the data set, I will guide you through my tidying process and give some insight on our missing data.
+Then after choosing the relevant variables for my analysis, I will visualize their relationship to the rest of the data and use that to decide which player will be the point winner.
+I will build 6 different models by splitting my data into a testing and training set, and set folds for stratified 10-fold cross validation.
+The models will be: K-Nearest Neighbors, Elastic Net, Decision Tree, Random Forest, Boosted Tree, and Support Vector Machine.
+Each of these models have their specialties, and I will be utilizing them to work on a binary classification problem.
+After discovering which models perform the best, I will select the top two to further explore on testing data to see how effective they really are at predicting which player will win the point.
+
+# Exploratory Data Analysis
+
+To begin, I will load in the data set that I have done a lot of cleaning on already and explain what I did.
+The raw file I read in had 300,000 observations from a wide variety of Grand Slam and other ATP tournaments.
+To simplify my analysis, I decided to include data from just one tournament, the ATP Masters Tournament *Indian Wells*, as it is taking place in Southern California as this project is being developed.
+This still left me with a hefty total of 12 thousand observations to work with.
+
+```{r class.source = "fold-show", eval=FALSE}
+tennis_data_indianwells<-tennis_data_initialdrop %>%
+  filter(grepl('Indian_Wells_Masters', match_id))
+```
+
+Next, I split the match_id variable into `Player 1` and `Player 2` so I could assign TRUE/FALSE values to the other variables that indicated if `Player 1` won the point or not, hit an ace or not, etc and dropped the columns I wouldn't use.
+
+```{r class.source = "fold-show", eval=FALSE}
+tennis_data_drop<- tennis_data_indianwells %>% 
+  separate(match_id, c("id_number", "Gender", "Tournament Name",
+                       "F_unknown", "Player 1", "Player 2"), "-")
+
+# Drop unused split columns
+tennis_data_clean1 <- subset(tennis_data_drop, select = -c(id_number, Gender,
+                                                           F_unknown, Notes))
+
+# Clean Names
+tennis_data_clean2 <- as_tibble(tennis_data_clean1) %>% clean_names()
+```
+
+Then I began the long process of converting the point codes into character descriptors that would eventually become factors.
+I split the `x1st` and `x2nd` variables into 3 separate variables each; one that would indicate the direction of the serve, one that would indicate the type of return shot, and one that would indicate the outcome of the point.
+I did this by slicing the first, second, and last characters of the strings from `x1st` and `x2nd` and using the `mapvalues()` function to convert the codes into words.
+I won't include the code for all the variables, but below is the code for the `x1st_direction` variable and it is similar to the others.
+
+```{r class.source = "fold-show", eval=FALSE}
+# Create New Column Point Outcome, Last characters in String
+tennis_df['x1st_outcome'] <- str_sub(tennis_df$x1st, -1)
+tennis_df$x1st_outcome[str_length(tennis_df$x1st) == 2] <- ''
+tennis_df$x1st_outcome <- mapvalues(tennis_df$x1st_outcome,
+                           from = c('@', '#', '*'),
+                           to = c('unforced error', 'forced error', 'winner'))
+```
+
+Finally, I converted the `pt_winner` variable into a binary "Player_1"/"Player_2" variable and assigned those values to `svr` and `ret` to indicate if they were serving or not.
+
+## Loading the Clean Data
+
+Now we have a clean data set to work with!
+
+```{r class.source = "fold-show"}
+# Load Clean Data Set
+tennis_df <- readRDS(file = "tennisdata.Rdata")
+tennis_df
+```
+
+Let's explore the missing values in our dataset.
+I am expecting to see missingness in the 6 variables translated from the point codes and for the second serve indicator.
+
+```{r}
+# Plot missing data
+tennis_df %>%
+  missing_plot()
+```
+
+These missing values are expected because there are many outcomes for each point; if the first serve goes in, there won't be values for the second serve variable.
+So we see lots of missing values in our variables created from second serve point data, but the data for that point is not really missing, it is just present in the first serve variables.
+It may seem like there is a lot of missing data but because the majority of my variables are factors, and the fact that not every point has a second serve, this missingness is expected and it does not make sense to perform any kind of imputation.
+
+## Finishing up Tidying the Data
+
+Next I converted all my binary variables into factor predictors and also converted `rally_count` into an integer variable as it was initially a character variable for whatever reason.
+
+```{r class.source = "fold-show"}
+# Convert variables to factors for analysis
+tennis_df <- tennis_df %>%
+  dplyr::mutate(
+         svr = factor(svr),
+         ret = factor(ret),
+         x1st_in = factor(x1st_in),
+         x2nd_in = factor(x2nd_in),
+         is_ace = factor(is_ace),
+         is_unret = factor(is_unret),
+         is_rally_winner = factor(is_rally_winner),
+         is_forced = factor(is_forced),
+         is_unforced = factor(is_unforced),
+         is_double = factor(is_double),
+         pt_winner = factor(pt_winner),
+         is_svr_winner = factor(is_svr_winner),
+         x1st_direction = factor(x1st_direction),
+         x2nd_direction = factor(x2nd_direction),
+         x1st_return = factor(x1st_return),
+         x2nd_return = factor(x2nd_return),
+         x1st_outcome = factor(x1st_outcome),
+         x2nd_outcome = factor(x2nd_outcome))
+```
+
+I described above in the Exploratory Data Analysis how I did the majority of data tidying already.
+Converting these variables into factors will help us build our recipe to create classification models later!
+
+## Visualizing the Exploration
+
+Our data relies on factor variables so we cannot use the function `corrplot()` to visualize the strength of correlation between the factors.
+I decided to use Theil's U Uncertainty Coefficient to very basically explore the relationships between my factor predictors.
+The uncertainty coefficient is a measure of nominal association: or more simply, given one variable how well can we predict the other?
+The closer the value of U is to zero, the better the forecast method.
+A value of 1 means the forecast is no better than a naïve guess.
+
+<center>
+![Uncertainty Coefficient Formula](Images/theilucoeff.png){width="%50"}
+</center>
+
+```{r}
+library(DescTools)
+# Correlation Matrix for Factor Predictors
+tennis_factors <- subset(tennis_df, select = c(svr, ret, x1st_in, x2nd_in, is_ace,
+                                               is_unret, is_forced, is_rally_winner,
+                                               is_unforced, is_svr_winner,
+                                               is_double, pt_winner, x1st_direction,
+                                               x2nd_direction, x1st_return, x2nd_return,
+                                               x1st_outcome, x2nd_outcome))
+
+# Given that a player is serving, how well can we predict that it will be an ace?
+svr_ace<-UncertCoef(tennis_factors$svr, tennis_factors$is_ace, direction = "column")
+
+# Given that a player is serving, how well can we predict what type of serve it was?
+svr_dir<-UncertCoef(tennis_factors$svr, tennis_factors$x1st_direction, direction = "column")
+
+# Given that a player is serving, how well can we predict that they will win the point?
+svr_ptwon<-UncertCoef(tennis_factors$svr, tennis_factors$pt_winner, direction = "column")
+```
+
+```{r}
+# Create Display Table
+data= matrix(c(svr_ace,svr_ptwon, svr_dir), ncol=1)
+colnames(data) = c('Player is Serving')
+rownames(data) <- c('Player hits an Ace','Player wins the Point', 'Player serves to the body/down the t/wide')
+final=as.table(data)
+final
+```
+
+Here, the column is our "given"; given the player is serving, how well can we predict that they will hit an ace, win the point, or serve to the body/down the t/wide.
+We can see that if the player is serving, we have a fairly high probability of predicting if they hit an ace or not and predicting the direction of the serve.
+This may have to do with the proportions of each level in the factors.
+
+### What Direction is the Serve?
+
+```{r}
+# Proportion of Factor Levels
+tennis_factors %>%
+  drop_na(x1st_direction) %>% 
+  ggplot(aes(x = x1st_direction, fill=x1st_direction)) +
+  geom_bar() + 
+  labs(x = "First Serve Direction", y = "Count", 
+       title = "Proportion of Serve Directions") 
+```
+
+As we can see from the graph above, first serve direction is predominantly wide and down the t, and only a small amount are hit to the body.
+These imbalanced proportions can affect our predictions and introduce bias into our models.
+
+### Is the Serve an Ace?
+
+```{r}
+# Proportion of Factor Levels
+tennis_factors %>%
+  drop_na(is_ace) %>% 
+  ggplot(aes(x = is_ace, fill=is_ace)) +
+  geom_bar() + 
+  labs(x = "Is Ace", y = "Count", 
+       title = "Proportion of Aces") 
+```
+
+We see something similar with the `is_ace` variable.
+Only a very small percentage of serves are aces in our data set.
+According to the ATP Tour website, the average amount of aces that the Top 50 players hit per game is 0.54, so this proportion makes sense, yet still skews our predictions.
+
+### First and Second Serves
+
+Now let's look at the proportion of First and Second serves that went in:
+
+```{r}
+# Proportion of Factor Levels
+tennis_factors %>%
+  drop_na(x1st_in) %>% 
+  ggplot(aes(x = c(x1st_in), fill=x1st_in)) +
+  geom_bar() + 
+  labs(x = "Is the First Serve In", y = "Count", 
+       title = "Proportion of First Serves In") 
+```
+
+Unfortunately, even for the pros, the first serve is difficult to keep in all the time.
+We can see from this graph that a good amount of first serves go in, but there is a notable amount of first serves that miss and lead to a second serve.
+
+```{r}
+# Proportion of Factor Levels
+tennis_factors %>%
+  drop_na(x2nd_in) %>% 
+  ggplot(aes(x = c(x2nd_in), fill=x2nd_in)) +
+  geom_bar() + 
+  labs(x = "Is the Second Serve In", y = "Count", 
+       title = "Proportion of Second Serves In") 
+```
+
+To reiterate, the missingness in this variable is important to acknowledge.
+Because the contributer who inputted this data chose to ignore this variable if the first serve went in, we have less observations, but the true proportion of second serves that go in is preserved.
+We can see that when a player hits a second serve, it goes in a large majority of the time.
+I will not include the `x2nd_in` variable as a predictor as I think it is redundant and will not affect our models by much.
+
+# Building the Models
+
+Now that we've done a bit of initial exploration for our variables, it's time to create our models.
+First we will split our data into training data and testing data, then craft our recipe, and finally set up stratified k-fold cross validation.
+
+## Train/Test Split
+
+The first step, splitting the data into training and testing sets is extremely important.
+This is done to avoid over-fitting and to make sure we have data to test our model's accuracy on that isn't a part of the data it was trained on.
+If we do not do this, our models will fail to reliably fit new additional data.
+We set a seed to make sure our analyses are reproducible.
+
+```{r class.source = "fold-show"}
+set.seed(232323)
+
+tennis_split <- initial_split(tennis_df, prop = 0.75, 
+                              strata = "pt_winner")
+
+tennis_train <- training(tennis_split)
+tennis_test <- testing(tennis_split)
+```
+
+Dimensions of the training dataset:
+
+```{r}
+dim(tennis_train)
+```
+
+Dimensions of the testing dataset:
+
+```{r}
+dim(tennis_test)
+```
+
+I split the data by a proportion of 0.75 which leaves 9,045 observations for the training set and 3,016 observations for the testing set.
+
+## Cooking Up Our Recipe
+
+Finally it is time to create the foundation of our analysis; our recipe.
+By putting together our predictor variables, altering them slightly where it's needed, and our response variable, we can create a base to build off of.
+Just like a game strategy you commit to before stepping on the court, we can build layers and layers of analysis on top of our recipe.
+
+I will be using 15 predictors to build my recipe.
+In terms of game strategy, 15 things to remember would be a lot, but for the sake of my analogy I'll say this is like thinking of 15 different things to do in order to defeat my opponent.
+I am excluding `player_1` and `player_2` because they are just player names that I kept in to keep myself entertained.
+I also won't include `x2nd_in` like described before.
+Our completed recipe is as follows:
+
+```{r class.source = "fold-show"}
+tennis_recipe <- recipe(pt_winner ~ x1st_in + is_ace + is_svr_winner
+                        + is_unret + is_rally_winner + is_forced + is_unforced + is_double
+                        + rally_count + x1st_direction + x2nd_direction + x1st_return
+                        + x2nd_return + x1st_outcome + x2nd_outcome,
+                        data=tennis_train) %>%
+  step_unknown(x1st_direction, new_level = "unknown direction") %>%
+  step_unknown(x2nd_direction, new_level = "unknown direction") %>%
+  step_unknown(x1st_return, new_level = "unknown return") %>%
+  step_unknown(x2nd_return, new_level = "unknown return") %>%
+  step_unknown(x1st_outcome, new_level = "unknown outcome") %>%
+  step_unknown(x2nd_outcome, new_level = "unknown outcome") %>%
+  step_dummy(all_factor_predictors()) %>%   # dummy code all factor predictors
+  step_normalize(all_predictors())    # normalize all predictors
+```
+
+## Stratified K-Fold Cross Validation
+
+Next I will stratify my cross validation on the response variable `pt_winner`; using 10 folds.
+
+```{r class.source = "fold-show"}
+tennis_folds <- vfold_cv(tennis_train, v = 10, strata = pt_winner)
+```
+
+## Tuning Models
+
+Below is the code for the Random Forest model fitting and hyper-parameter tuning I did. I won't include the code for all of the models in this report, as it's a bit redundant, but you can find all the code in my `final-code.Rmd` file. These choices will be explored in the *Model Results* section.
+
+```{r, class.source = "fold-show", eval=F}
+# Random Forest Model: tuning 'mtry', 'trees', and 'min_n'
+rf_tennis <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance="impurity") %>%
+  set_mode("classification")
+
+# Random Forest Workflow
+rf_workflow <- workflow() %>% 
+  add_recipe(tennis_recipe) %>% 
+  add_model(rf_tennis)
+
+save(rf_workflow, file = "rf_workflow.rda")
+
+# Random Forest Grid
+rf_grid <- grid_regular(mtry(range = c(1, 15)),
+                        trees(range=c(1,100)),
+                        min_n(range=c(2, 20)), levels = 8)
+# Random Forest Tuning
+rf_tune <- tune_grid(
+  object = rf_workflow, 
+  resamples = tennis_folds, 
+  grid =  rf_grid,
+  control = control_grid(verbose = TRUE)
+)
+```
+
+# Model Results
+
+Since my data set was fairly large at 12,000 observations, my models took quite a bit of time to run.
+I will now load them in to start visualizing their results.
+
+```{r class.source = "fold-show"}
+# Load all Models
+load("knn_tune_results.rda")
+load("en_tune_results.rda")
+load("tree_tune_results.rda")
+load("rf_tune_results.rda")
+load("bt_tune_results.rda")
+load("svm_tune_results.rda")
+
+# Load all Model Workflows
+load("knn_workflow.rda")
+load("en_workflow.rda")
+load("tree_workflow.rda")
+load("rf_workflow.rda")
+load("bt_workflow.rda")
+load("svm_workflow.rda")
+```
+
+## Performance Metrics
+
+For binary classification problems like mine, the most useful performance metrics are `accuracy` and `roc_auc`.
+Accuracy is the ratio of the number of True predictions for one model to the number of total samples in the data set, while the ROC Curve is a curve that maps the relationship between the True Positive Rate and False Positive Rate of the model across different cut-off thresholds.
+For this project, we will focus on the ROC AUC value because we have imbalanced data, but I also think it is important to acknowledge our model accuracy as well.
+
+## Visualizing Results
+
+I will use the `autoplot()` function to visualize the results of my tuned models.
+`autoplot()` displays the change in the accuracy and AUC ROC metrics as certain parameters are altered.
+I will display my best three models to compare their outputs.
+
+### K Nearest Neighbors Model
+
+K-Nearest Neighbor Modeling approximates the association between the predictors and the outcome by averaging observations that are in the same neighborhood.
+More simply, it classifies data points based on how other points close to it are classified.
+
+The important parameter for tuning my K-NN Model is:
+
+`neighbors`: the number of neighbors the algorithm looks at when classifying any new observation.
+
+I used hyper-parameter tuning to determine the optimal value of `neighbors` for my KNN model because my model includes many predictors that would've taken hours of trial and error to optimize.
+Cross validation also helps with choosing the optimal number of neighbors for my dataset by giving our model an opportunity to test on multiple splits.
+
+<center>
+![Visualization of the KNN algorithm determining boundaries](Images/knnimage.png){width="%50"}
+</center>
+
+Let's reveal which one of my K-NN models did the best:
+
+```{r}
+show_best(knn_tune, metric='roc_auc', n = 1)
+```
+
+Below is the ROC Curve for my best K-NN Model with 10 neighbors.
+
+```{r}
+# KNN Model
+load('knn_training_roc')
+roc_curve(knn_auc, truth = pt_winner, .pred_Player_1) %>% 
+  autoplot()
+```
+
+As we can see, my K-NN Model does not perform very well even when being tested on the training data.
+This isn't a good sign, but doesn't necessarily indicate how our other models will do.
+Next, let's look at the Random Forest Model to see if it did any better.
+
+### Random Forest Model
+
+Random Forest Modeling begins with selecting a subset of data points and a subset of features for constructing each decision tree.
+Then individual decision trees are constructed for each sample and produce an output.
+Finally, the output is the average of the results from the individual decision trees.
+
+The important parameters for tuning my Random Forest Model are:
+
+`mtry`: the number of randomly sampled predictors to create my models.
+
+`trees`: the number of trees present in each of models.
+
+`min_n`: the minimum number of observations required to split a tree node further.
+
+For my Random Forest Model, I chose an `mtry` range from [1, 15].
+A `mtry`=15 value for my model represents bagging.
+Bagging, also known as Bootstrap Aggregation, selects a random sample of predictors from the entire data set and helps reduce high variance.
+
+<center>
+![](Images/tree.gif)
+</center>
+
+As we can see below, the ROC AUC value for my best RF model is not very good.
+
+```{r}
+show_best(rf_tune, metric='roc_auc', n = 1)
+```
+
+The highest AUC is about 0.54, which means that my model will correctly predict point winners only 54% of the time, only a tiny bit better than flipping a coin.
+
+```{r}
+autoplot(rf_tune)
+```
+
+Below is the ROC Curve for my best Random Forest Model on the training data;
+
+RF #477 with `mtry`=9, `trees`=43, and `min_n`=20.
+
+```{r}
+# Random Forest Model
+load('rf_training_roc')
+roc_curve(rf_auc, truth = pt_winner, .pred_Player_1) %>% 
+  autoplot()
+```
+
+Even this model, tested on the data it was trained on, does not perform very well.
+However, it is more consistent than our KNN model.
+Now let's look at the Support Vector Machine.
+
+### Support Vector Machine
+
+The objective of a Support Vector Machine is to find a hyper-plane in an N-dimensional space that distinctly classifies the data points in order to predict outcomes.
+They are usually used for binary classification problems, like the one I am dealing with, and attempt to produce high prediction accuracy while taking less computational power.
+
+The important parameter for tuning my Support Vector Machine is:
+
+`cost`: the cost of misclassifications; for a low cost, you aim for a smooth decision surface and for a higher cost, you aim to classify more points correctly.
+
+The diagram below visualizes the hyper-plane (black line) and shows how a SVM distinguishes classes so that it can predict outcomes.
+I fit a Radial Basis Support Vector Machine because this type of SVM is best used on data that cannot be linearly separated.
+
+<center>
+![](Images/svmradial.png){width="50%"}
+</center>
+
+```{r}
+show_best(svm_rbf_res, metric='roc_auc', n = 1)
+```
+
+Unfortunately, both the ROC AUC values and the Accuracy of my SVM model are poor again.
+
+```{r}
+autoplot(svm_rbf_res)
+```
+
+Below is the ROC Curve for my best Support Vector Machine on the training data;
+
+SVM #4 with `cost`=2.378414.
+
+```{r}
+# Support Vector Machine
+load('svm_training_roc')
+roc_curve(svm_auc, truth = pt_winner, .pred_Player_1) %>% 
+  autoplot()
+```
+
+So we can conclude that my Random Forest Model performed the best, followed by the Support Vector machine.
+These results were only fitted on the training data, so we still need to see how our models do on the testing data that we set aside earlier.
+
+## Model Accuracies
+
+To summarize the ROC AUC values from my models on the training data, I created a table below in descending from best to worst performance for each method.
+
+```{r}
+load('knn_training_auc.rda')
+load('en_training_auc.rda')
+load('tree_training_auc.rda')
+load('rf_training_auc.rda')
+load('bt_training_auc.rda')
+load('svm_training_auc.rda')
+
+ROC_AUCS <- c(tennis_rf_auc$.estimate,
+              tennis_svm_auc$.estimate,
+              tennis_knn_auc$.estimate,
+              tennis_bt_auc$.estimate,
+              tennis_tree_auc$.estimate,
+              tennis_en_auc$.estimate
+              )
+
+Models <- c("Random Forest",
+            "Support Vector Machine",
+            "K Nearest Neighbors",
+            "Boosted Trees",
+            "Decision Tree",
+            "Elastic Net"
+            )
+tennis_aucs<-tibble(Models, ROC_AUCS)
+kable(tennis_aucs) %>%
+  kable_styling(position = "center")
+```
+
+As you can see from the table, my Random Forest model performed the best overall with a ROC AUC score of 0.70, followed by the Support Vector Machine with a ROC AUC of 0.64.
+It is important to note that this these results are from my models fitted on the training data, so this performance is potentially inflated because the model is being tested on the data it was trained on.
+
+We will further explore my Random Forest model and Support Vector Machine's performance on the testing data.
+The performance metrics on the testing data will be a much more accurate representation of my model's performance overall on new data.
+
+# The Best Models
+
+My two best models are the Random Forest and Support Vector Machine and I will further explore their true performance results.
+I will also discuss their `accuracy` metrics.
+
+## Random Forest Model
+
+Beginning with my strongest model, the Random Forest, I want to analyze how capable it is on predicting point winners from data it has not encountered.
+The ROC AUC score of 0.70 seen before was not very strong, but it is still inflated because it was using the same data it was originally trained with.
+
+```{r class.source = "fold-show"}
+show_best(rf_tune, metric = "roc_auc") %>%
+  select(-.estimator, .config) %>%
+  slice(1)
+```
+
+RF #477 with `mtry`=9, `trees`=44, and `min_n`=20 is our best Random Forest model.
+Let's see how it does!
+
+```{r}
+load('rf_final_fit.rda')
+tennis_rf_test_auc <- augment(rf_final_fit, new_data = tennis_test) %>%
+  roc_auc(pt_winner, estimate = .pred_Player_1) %>%
+  select(.estimate)
+tennis_rf_test_auc
+```
+
+Disappointment could not even begin to describe how I felt when this value appeared; how will I ever be able to get the upper hand against my Dad with a model that barely predicts if a shot will be a winner half of the time?
+With this final AUC ROC value of about 0.51, I must begrudgingly conclude that my model does not perform well at all and is basically useless.
+
+```{r}
+augment(rf_final_fit, new_data = tennis_test, type = 'prob') %>%
+  roc_curve(pt_winner, .pred_Player_1) %>%
+  autoplot()
+```
+
+The plot of RF #477's ROC curve above is the final nail in my coffin.
+The higher up and curved to the left the black line is, the better the model's AUC will be.
+Therefore, this basically linear line corroborates the ineptitude of my model at predicting point winners.
+Let's see if our Support Vector Machine does any better.
+
+## Support Vector Machine
+
+```{r class.source = "fold-show"}
+show_best(svm_rbf_res, metric = "roc_auc") %>%
+  select(-.estimator, .config) %>%
+  slice(1)
+```
+
+SVM #4 with `cost`=2.378414 is our best Support Vector Machine.
+Let's see how it does on the testing data.
+Everyone cross your fingers!
+
+```{r}
+load('svm_final_fit.rda')
+tennis_svm_test_auc <- augment(svm_final_fit, new_data = tennis_test) %>%
+  roc_auc(pt_winner, estimate = .pred_Player_1) %>%
+  select(.estimate)
+tennis_svm_test_auc
+```
+
+```{r}
+augment(svm_final_fit, new_data = tennis_test, type = 'prob') %>%
+  roc_curve(pt_winner, .pred_Player_1) %>%
+  autoplot()
+```
+
+Hooray!
+It did slightly better than our Random Forest, which was a surprise, but still is pretty awful.
+
+## Final Model Accuracies
+
+Now, I will quickly discuss my model accuracy.
+Accuracy determines the percentage of correct predictions made by the model.
+
+```{r}
+acc_metric <- metric_set(accuracy)
+rf_acc<-augment(rf_final_fit, new_data = tennis_test) %>%
+  acc_metric(truth = pt_winner, estimate = .pred_class)
+svm_acc<-augment(svm_final_fit, new_data = tennis_test) %>%
+  acc_metric(truth = pt_winner, estimate = .pred_class)
+
+Accuracy <- c(rf_acc$.estimate, svm_acc$.estimate)
+
+Model <- c("Random Forest", "Support Vector Machine")
+tennis_accs<-tibble(Model, Accuracy)
+kable(tennis_accs) %>%
+  kable_styling(position = "center")
+```
+
+Both model accuracies are extremely low, meaning our models predict point winners in our testing data with about 51% accuracy.
+Provided that the class representation in my data is imbalanced, this accuracy metric is not very important in determining the performance of our models.
+This is why we focus on the ROC AUC metric to come to any conclusions.
+
+Therefore, based on the ROC AUC values above, I can say that my Support Vector Machine performs almost identically to my Random Forest model, but both models are essentially useless at predicting which player will win the point.
+Using the results from the testing data to interpret my model performance is a better practice because testing data provides a check of unseen sets of data to confirm that my models were trained effectively.
+
+## Variable Importance Plot
+
+Even though our models aren't very useful, I'm curious to see which predictors had the most influence on predicting who would win the point.
+So let's look at the variable importance plot of my Random Forest Model.
+
+```{r}
+# Variable Importance Plot
+rf_final_fit %>% extract_fit_parsnip() %>% 
+  vip() +
+  theme_minimal()
+```
+
+These results were very interesting to me as a Statistician and also a Tennis player.
+It is an unspoken rule that winning on your serve should be easier than winning while returning.
+This is corroborated by the fact that the `is_svr_winner_Yes` variable has the highest importance.
+I also found it interesting that the next most important variable is `x1st_direction_wide`; the first serve out wide.
+I was expecting the `x1st_direction_down.the.t` (first serve down the t) to be a very important, if not *the* most important, variable because these serves are aces a lot of the time.
+Lastly, it is amusing to see that a rally count of 5 tends to indicate who will win the point.
+Perhaps I will have to try to keep my Dad and I's rallies to 5 shots and see if that helps.
+
+This variable plot is a bit deceiving in the way that it makes it seem like these variables are strong predictors of who is the point winner, when in reality they aren't strong enough to accurately predict point winner more than 50% of the time.
+But it is still very interesting to note which predictors were the most useful.
+
+# Putting my Model to the Test
+
+Even though I have concluded that my model is poor at predicting point winners, I still want to see how it does with data outside of both the testing and training sets.
+I'll take two random points from Grand Slam Tournaments, one where Player 1 wins the point, and one where they lose, and test them on my Support Vector Machine Model.
+
+## Player 1 Won the Point
+
+I am going to grab the last point of the 2022 Roland-Garros Finals; Rafael Nadal versus Casper Ruud.
+This is the match point Rafa won to earn him his 14th Win at Roland Garros and cement himself in history as King of the Clay Court!
+
+```{r class.source = "fold-show"}
+p1_wins_test_example <- data.frame(
+  x1st_in='TRUE',
+  is_ace='FALSE',
+  is_svr_winner='No',
+  is_unret='FALSE',
+  is_rally_winner='TRUE',
+  is_forced='FALSE',
+  is_unforced='FALSE',
+  is_double='FALSE',
+  rally_count= '8',
+  x1st_direction='body',
+  x2nd_direction=NA,
+  x1st_return='forehand',
+  x2nd_return=NA,
+  x1st_outcome='winner',
+  x2nd_outcome=NA
+)  
+```
+
+Here is a short clip of the point.
+Take note of our important variables; the serve is hit to Rafa's body, Rafa returns with a forehand, the rally lasts for 8 shots, and then Rafa hits a winner to win the point.
+
+<center>
+
+<video width="720" height="640" controls>
+
+<source src="Images/rolandgarrosfinalrafa3.mov" type="video/mp4">
+
+</video>
+
+</center>
+
+```{r class.source = "fold-show"}
+predict(svm_final_fit, p1_wins_test_example, type = "class")
+```
+
+In this case Nadal is Player 1 and Ruud is Player 2.
+So we can see, our SVM model did not predict who would win the point correctly.
+Luckily for Rafa, he secured the victory by winning this point, avoiding the fate our model predicted for him.
+
+## Player 1 Lost the Point
+
+For this case, I am going to grab the match point from the Wimbledon 2019 Final; Roger Federer versus Novak Djokovic.
+
+```{r class.source = "fold-show"}
+p2_wins_test_example <- data.frame(
+  x1st_in='FALSE',
+  is_ace='FALSE',
+  is_svr_winner='No',
+  is_unret='FALSE',
+  is_rally_winner='FALSE',
+  is_forced='FALSE',
+  is_unforced='TRUE',
+  is_double='FALSE',
+  rally_count= '2',
+  x1st_direction='down the t',
+  x2nd_direction='body',
+  x1st_return='deep error',
+  x2nd_return='backhand',
+  x1st_outcome=NA,
+  x2nd_outcome='unforced error'
+)  
+```
+
+Here is a short clip of the point.
+It does not show the first serve, that did not go in, and starts immediately with the second serve that is hit at Djokovic's body.
+Then Djokovic returns with a backhand, and Federer shanks the ball into the air for an unforced error that loses him the whole match.
+
+<center>
+
+<video width="720" height="640" controls>
+
+<source src="Images/wimbfinaldjok3.mov" type="video/mp4">
+
+</video>
+
+</center>
+
+```{r class.source = "fold-show"}
+predict(svm_final_fit, p2_wins_test_example, type = "class")
+```
+
+In this case Federer is Player 1 and Djokovic is Player 2.
+Again we see that our SVM model fails to predict the correct winner.
+
+# Conclusion
+
+Throughout this project, I have ardently searched for the key to defeating my Dad in our tennis matches by building models to predict point winning shots.
+I created 6 models that predict point winners and concluded that the Support Vector Machine performed the best.
+Unfortunately, this model was still only a minuscule amount better than flipping a coin.
+
+To further explore this project, I could analyze points for individual players instead of grouping all players together.
+Then I could pay close attention to that individual's strategies or patterns and see which one of their shots win most frequently and compare that to their World Ranking.
+However, I wouldn't dare come to any conclusions and compare myself to the top players in the world; my Dad and I may feel like Federer and Nadal, but our execution falls a tad short.
+
+Although I was disappointed by the results of my models, I also thought to myself; tennis wouldn't be a fun game if I could actually predict what types of shots would be point winners.
+The beauty of the game comes from the creativity of the players!
+
+This project reminded me of all the different aspects of play that affect the outcome of a point.
+My coach taught me to hit cross-court until an opportunity arises to hit a winner when I was playing doubles, but that doesn't necessarily apply to singles matches.
+You have to be so precise with the depth and angle of your shots in singles and the margin of error is high even for the pros, which explains why it is so hard to predict who will win the point.
+
+Hopefully with this new-found knowledge, I can get back on the court and focus on what's really important; having fun with my dad!
+
+<center>![My art of Me vs My Dad part 2](Images/tennis_art.png)</center>
